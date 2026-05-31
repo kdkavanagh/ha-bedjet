@@ -920,15 +920,16 @@ class BedJet:
         """Read device firmware."""
         tag = 0
         while not self._firmware_version and tag < 2:
-            if self._client and self._client.is_connected:
-                _LOGGER.debug("%s: Read device firmware", self.name_and_address)
-                command = bytearray(
-                    (BedJetCommand.GET_BIO, BioDataRequest.FIRMWARE_VERSIONS, tag)
-                )
-                await self._send_command(command)
-                data = await self._client.read_gatt_char(BEDJET3_BIODATA_FULL_UUID)
-                self._parse_bio_data_response(data)
-                tag += 1
+            if not (self._client and self._client.is_connected):
+                break
+            _LOGGER.debug("%s: Read device firmware", self.name_and_address)
+            command = bytearray(
+                (BedJetCommand.GET_BIO, BioDataRequest.FIRMWARE_VERSIONS, tag)
+            )
+            await self._send_command(command)
+            data = await self._client.read_gatt_char(BEDJET3_BIODATA_FULL_UUID)
+            self._parse_bio_data_response(data)
+            tag += 1
         if not self._firmware_version:
             _LOGGER.debug("%s: Failed to read firmware", self.name_and_address)
 
@@ -936,15 +937,16 @@ class BedJet:
         """Read biorhythm preset names."""
         tag = 0
         while not self._biorhythm_names and tag < 2:
-            if self._client and self._client.is_connected:
-                _LOGGER.debug("%s: Read biorhythm names", self.name_and_address)
-                command = bytearray(
-                    (BedJetCommand.GET_BIO, BioDataRequest.BIORHYTHM_NAMES, tag)
-                )
-                await self._send_command(command)
-                data = await self._client.read_gatt_char(BEDJET3_BIODATA_FULL_UUID)
-                self._parse_bio_data_response(data)
-                tag += 1
+            if not (self._client and self._client.is_connected):
+                break
+            _LOGGER.debug("%s: Read biorhythm names", self.name_and_address)
+            command = bytearray(
+                (BedJetCommand.GET_BIO, BioDataRequest.BIORHYTHM_NAMES, tag)
+            )
+            await self._send_command(command)
+            data = await self._client.read_gatt_char(BEDJET3_BIODATA_FULL_UUID)
+            self._parse_bio_data_response(data)
+            tag += 1
         if not self._biorhythm_names:
             _LOGGER.debug("%s: Failed to read biorhythm names", self.name_and_address)
 
@@ -952,15 +954,16 @@ class BedJet:
         """Read memory preset names."""
         tag = 0
         while not self._memory_names and tag < 2:
-            if self._client and self._client.is_connected:
-                _LOGGER.debug("%s: Read memory names", self.name_and_address)
-                command = bytearray(
-                    (BedJetCommand.GET_BIO, BioDataRequest.MEMORY_NAMES, tag)
-                )
-                await self._send_command(command)
-                data = await self._client.read_gatt_char(BEDJET3_BIODATA_FULL_UUID)
-                self._parse_bio_data_response(data)
-                tag += 1
+            if not (self._client and self._client.is_connected):
+                break
+            _LOGGER.debug("%s: Read memory names", self.name_and_address)
+            command = bytearray(
+                (BedJetCommand.GET_BIO, BioDataRequest.MEMORY_NAMES, tag)
+            )
+            await self._send_command(command)
+            data = await self._client.read_gatt_char(BEDJET3_BIODATA_FULL_UUID)
+            self._parse_bio_data_response(data)
+            tag += 1
         if not self._memory_names:
             _LOGGER.debug("%s: Failed to read memory names", self.name_and_address)
 
