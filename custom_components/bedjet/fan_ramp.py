@@ -26,9 +26,8 @@ RAMP_STEP_DELAY = 4.0  # seconds to wait after each increment
 WARM_ON_FLOOR = 10  # fan speed to drop to when warming up from standby
 TEMP_CATCHUP_TIMEOUT = 120.0  # cap on waiting for current temp to reach target
 
-# Only these modes actually produce heat, so only here does waiting for the
-# current (outlet) temperature to reach the target make sense. DRY is "high fan,
-# no heat" and COOL is fan-only - gating on temperature there would just stall.
+# Only these modes heat, so only here does waiting for the temp to catch up make
+# sense; DRY (high fan, no heat) and COOL (fan-only) would just stall the gate.
 HEATING_MODES = (
     OperatingMode.HEAT,
     OperatingMode.EXTENDED_HEAT,
@@ -71,12 +70,21 @@ class FanRampController:
         return self._enabled
 
     def set_enabled(self, enabled: bool) -> None:
-        """Enable or disable ramping. Disabling cancels any ramp in progress."""
+        """Set the enabled flag without device I/O (used on startup restore)."""
         if enabled == self._enabled:
             return
         self._enabled = enabled
         if not enabled:
             self.cancel()
+        self._notify()
+
+    async def async_set_enabled(self, enabled: bool) -> None:
+        """Enable/disable from a user action; disabling mid-ramp applies the target."""
+        if enabled == self._enabled:
+            return
+        self._enabled = enabled
+        if not enabled:
+            await self.finalize_to_target()
         self._notify()
 
     # --- ramping state ---
@@ -85,6 +93,11 @@ class FanRampController:
     def is_ramping(self) -> bool:
         """Return True while a ramp is in progress (device fan < target fan)."""
         return self._task is not None and not self._task.done()
+
+    @property
+    def target_fan_speed(self) -> int | None:
+        """Return the most recently requested target fan speed."""
+        return self._target_fan_speed
 
     def display_fan_speed(self, fallback: int) -> int:
         """Fan speed to show in HA: the requested target while ramping."""
@@ -99,34 +112,43 @@ class FanRampController:
         self._task = None
 
     async def set_floor(self, floor: int = WARM_ON_FLOOR) -> None:
-        """Drop the device fan to the warm-up floor, bypassing the ramp.
-
-        Used when warming on from standby so a subsequent target ramps up from a
-        low airflow.
-        """
+        """Drop the device fan to the warm-up floor, bypassing the ramp."""
         self.cancel()
         await self._device.set_fan_speed(floor)
         self._notify()
 
-    async def request_fan_speed(self, target: int) -> None:
-        """Apply a fan-speed request: ramp up gradually, apply decreases at once."""
+    async def finalize_to_target(self) -> None:
+        """Abort any ramp and apply the requested target speed at once."""
+        was_ramping = self.is_ramping
+        self.cancel()
+        if was_ramping and self._target_fan_speed is not None:
+            await self._device.set_fan_speed(self._target_fan_speed)
+        self._notify()
+
+    async def request_fan_speed(
+        self, target: int, target_temp: float | None = None
+    ) -> None:
+        """Ramp up while still warming (current temp below target), else apply at once.
+
+        ``target_temp`` overrides the device's reported target for the warming
+        check, so a caller that is about to change the target temp can pass the
+        new value.
+        """
         target = max(5, min(100, round(target / 5) * 5))
         self._target_fan_speed = target
         state = self._device.state
         current = state.fan_speed
-        # Only ramp when warming: a fan increase while the target temp is at or
-        # above the current temp. If the target is below current there is nothing
-        # to maintain, so apply the new speed at once.
-        warming = state.target_temperature >= state.current_temperature
+        if target_temp is None:
+            target_temp = state.target_temperature
+        warming = state.current_temperature < target_temp
 
+        # Disabled, a decrease / no-op, or already warm enough -> apply at once.
         if not self._enabled or target <= current or not warming:
-            # Disabled, a decrease / no-op, or not warming -> apply immediately.
             self.cancel()
             await self._device.set_fan_speed(target)
             self._notify()
             return
 
-        # Increase while warming -> start (or restart, retargeting) the ramp.
         self.cancel()
         self._task = self._device.loop.create_task(self._ramp(target))
         self._notify()
@@ -135,8 +157,8 @@ class FanRampController:
         """Step the fan speed up to ``target``, gated on temperature when heating."""
         _LOGGER.debug("Fan ramp: starting ramp to %d%%", target)
         try:
-            # Track the level locally so the loop always terminates even if the
-            # device stops reporting (e.g. a disconnect mid-ramp).
+            # Local counter so the loop terminates even if the device stops
+            # reporting (e.g. a disconnect mid-ramp).
             level = self._device.state.fan_speed
             while level < target:
                 level = min(level + RAMP_STEP, target)

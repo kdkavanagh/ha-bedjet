@@ -313,13 +313,17 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
 
         temp = kwargs.get(ATTR_TEMPERATURE)
 
-        # A target at or below the current temperature is not a warm-up, so any
-        # fan ramp in progress is aborted (and none is started below).
-        if temp is not None and temp <= self._device.state.current_temperature:
+        # Snapshot ramp state, then pause any ramp while we switch modes / set the
+        # temp so it can't fight the per-mode fan reset. It's re-resolved at the
+        # end against the new target temp (snaps if warm enough, else re-ramps).
+        was_ramping = self._ramp.is_ramping
+        ramp_target = self._ramp.target_fan_speed
+        warm_on = False
+        if was_ramping:
             self._ramp.cancel()
 
         if self._attr_hvac_mode == HVACMode.AUTO:
-            # Detect warming on from standby before the operating mode changes.
+            # Warming on from standby (detect before the operating mode changes).
             warm_on = (
                 self._device.state.operating_mode == OperatingMode.STANDBY
                 and temp is not None
@@ -336,26 +340,17 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
                     temp,
                     self.temperature_unit,
                 )
-                # The BedJet resets fan speed to a per-mode default whenever the
-                # operating mode is switched via a mode button. Only the temperature
-                # was commanded here, so snapshot the current fan speed and restore
-                # it after the switch to avoid silently clobbering it.
+                # The BedJet resets fan to a per-mode default on a mode-button
+                # press; snapshot it to restore in the no-ramp case.
                 prev_fan_speed = self._device.state.fan_speed
                 await self._device.set_operating_mode(target_mode)
                 if warm_on:
-                    # Warming on from standby: drop to a low-airflow floor so a
-                    # subsequent fan request ramps up gradually as the bed warms.
-                    _LOGGER.debug("Warm-on from standby: setting fan ramp floor")
                     await self._ramp.set_floor()
                 elif (
-                    prev_fan_speed > 0
+                    not was_ramping
+                    and prev_fan_speed > 0
                     and self._device.state.fan_speed != prev_fan_speed
                 ):
-                    _LOGGER.debug(
-                        "Restoring fan speed to %d%% after auto mode change (device reset it to %d%%)",
-                        prev_fan_speed,
-                        self._device.state.fan_speed,
-                    )
                     await self._device.set_fan_speed(prev_fan_speed)
                 await self.async_update_ha_state(force_refresh=True)
             else:
@@ -396,3 +391,8 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
                 )
 
         await self._device.set_temperature(temp)
+
+        # Re-resolve a ramp that was paused above against the new target temp:
+        # snaps straight to target if already warm enough, else ramps from here.
+        if was_ramping and not warm_on and ramp_target is not None:
+            await self._ramp.request_fan_speed(ramp_target, target_temp=temp)

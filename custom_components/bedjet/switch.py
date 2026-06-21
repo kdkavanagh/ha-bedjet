@@ -132,8 +132,8 @@ class BedJetFanRampSwitch(BedJetEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable gradual fan ramping."""
-        self._ramp.set_enabled(False)
+        await self._ramp.async_set_enabled(False)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable gradual fan ramping."""
-        self._ramp.set_enabled(True)
+        await self._ramp.async_set_enabled(True)
