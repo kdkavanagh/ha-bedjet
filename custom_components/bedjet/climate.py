@@ -9,6 +9,7 @@ from homeassistant.components.climate import (
     ATTR_HVAC_MODE,
     ClimateEntity,
     ClimateEntityFeature,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.components.climate.const import DOMAIN as CLIMATE_DOMAIN
@@ -37,6 +38,16 @@ OPERATING_MODE_MAP = {
     OperatingMode.TURBO: HVACMode.HEAT,
     OperatingMode.WAIT: HVACMode.OFF,
 }
+OPERATING_MODE_ACTION_MAP = {
+    OperatingMode.COOL: HVACAction.COOLING,
+    OperatingMode.DRY: HVACAction.DRYING,
+    OperatingMode.HEAT: HVACAction.HEATING,
+    OperatingMode.EXTENDED_HEAT: HVACAction.HEATING,
+    OperatingMode.TURBO: HVACAction.HEATING,
+    OperatingMode.STANDBY: HVACAction.OFF,
+    OperatingMode.WAIT: HVACAction.IDLE,
+}
+
 OPERATING_MODE_PRESET_MAP = {
     OperatingMode.EXTENDED_HEAT: "Extended Heat",
     OperatingMode.TURBO: "Turbo",
@@ -137,16 +148,21 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
         self._attr_current_temperature = state.current_temperature
         self._attr_fan_mode = f"{state.fan_speed}%"
 
-        # Only update hass-displayed mode if:
-        if (
-            getattr(self, "_attr_hvac_mode", None) != HVACMode.AUTO  # Not in auto mode
-            or state.operating_mode == OperatingMode.STANDBY  # Bedjet turned itself off
-        ):
+        # In AUTO, hvac_mode is a user-set intent that must survive device
+        # operating_mode changes - including the transient/commanded STANDBY frames
+        # the BedJet emits during mode switches and automation-driven offs. Leaving
+        # AUTO here would strand HA in the device's raw mode (e.g. "dry"), which then
+        # skips the auto-mode temperature handling. AUTO is only exited by an explicit
+        # service call (async_set_hvac_mode / async_set_temperature). Whether the
+        # device is actively running vs off is surfaced via hvac_action instead.
+        if getattr(self, "_attr_hvac_mode", None) != HVACMode.AUTO:
             new_mode = OPERATING_MODE_MAP[state.operating_mode]
             _LOGGER.debug(
                 f"Bedjet state overwriting hvac mode.  Current mode: {getattr(self, '_attr_hvac_mode', None)}, new mode: {new_mode}"
             )
             self._attr_hvac_mode = new_mode
+
+        self._attr_hvac_action = OPERATING_MODE_ACTION_MAP[state.operating_mode]
 
         self._max_temp_actual = state.maximum_temperature
         self._min_temp_actual = state.minimum_temperature
@@ -216,8 +232,13 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
         else:
             target_mode = HVAC_MODE_MAP[hvac_mode]
 
-        await self._device.set_operating_mode(target_mode)
+        # Set the intent before awaiting: set_operating_mode pauses callbacks while
+        # confirming the change, then fires a callback on resume - which runs while
+        # this method is still suspended on the await below. If _attr_hvac_mode were
+        # still the old value at that point, _async_update_attrs would overwrite it
+        # with the raw operating mode. Setting it first keeps the intent sticky.
         self._attr_hvac_mode = hvac_mode
+        await self._device.set_operating_mode(target_mode)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set new preset mode."""
