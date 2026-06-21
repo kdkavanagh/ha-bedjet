@@ -306,7 +306,19 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
                     temp,
                     self.temperature_unit,
                 )
+                # The BedJet resets fan speed to a per-mode default whenever the
+                # operating mode is switched via a mode button. Only the temperature
+                # was commanded here, so snapshot the current fan speed and restore
+                # it after the switch to avoid silently clobbering it.
+                prev_fan_speed = self._device.state.fan_speed
                 await self._device.set_operating_mode(target_mode)
+                if prev_fan_speed > 0 and self._device.state.fan_speed != prev_fan_speed:
+                    _LOGGER.debug(
+                        "Restoring fan speed to %d%% after auto mode change (device reset it to %d%%)",
+                        prev_fan_speed,
+                        self._device.state.fan_speed,
+                    )
+                    await self._device.set_fan_speed(prev_fan_speed)
                 await self.async_update_ha_state(force_refresh=True)
             else:
                 _LOGGER.debug(
