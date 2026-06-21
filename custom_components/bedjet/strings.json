@@ -21,6 +21,9 @@
       "dual_zone": {
         "name": "Dual zone"
       },
+      "fan_ramping": {
+        "name": "Fan ramping"
+      },
       "units_setup": {
         "name": "Units setup"
       }
@@ -73,6 +76,9 @@
     "switch": {
       "enable_led": {
         "name": "Enable LED"
+      },
+      "fan_ramp": {
+        "name": "Gradual fan ramp"
       },
       "mute_beeps": {
         "name": "Mute beeps"

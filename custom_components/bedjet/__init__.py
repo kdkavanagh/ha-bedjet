@@ -18,6 +18,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEVICE_TIMEOUT, UPDATE_SECONDS
+from .fan_ramp import FanRampController
 from .pybedjet import BedJet
 
 PLATFORMS: list[Platform] = [
@@ -40,6 +41,7 @@ class BedJetData:
     title: str
     device: BedJet
     coordinator: DataUpdateCoordinator[None]
+    ramp: FanRampController
 
 
 type BedJetConfigEntry = ConfigEntry[BedJetData]
@@ -116,7 +118,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: BedJetConfigEntry) -> bo
     finally:
         cancel_first_update()
 
-    entry.runtime_data = BedJetData(entry.title, bedjet, coordinator)
+    entry.runtime_data = BedJetData(
+        entry.title, bedjet, coordinator, FanRampController(bedjet)
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

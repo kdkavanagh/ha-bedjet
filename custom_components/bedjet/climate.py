@@ -22,6 +22,7 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 
 from . import BedJetConfigEntry
 from .entity import BedJetEntity
+from .fan_ramp import FanRampController
 from .pybedjet import BedJet, BedJetButton, BedJetCommand, OperatingMode
 from .pybedjet.helpers import BEDJET_MAX_TEMP, BEDJET_MIN_TEMP
 
@@ -91,7 +92,7 @@ async def async_setup_entry(
     """Set up the climate platform for BedJet."""
     data = entry.runtime_data
     async_add_entities(
-        [BedJetClimateEntity(data.coordinator, data.device, entry.title)]
+        [BedJetClimateEntity(data.coordinator, data.device, entry.title, data.ramp)]
     )
 
 
@@ -122,9 +123,14 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
 
     def __init__(
-        self, coordinator: DataUpdateCoordinator[None], device: BedJet, name: str
+        self,
+        coordinator: DataUpdateCoordinator[None],
+        device: BedJet,
+        name: str,
+        ramp: FanRampController,
     ) -> None:
         """Initialize a BedJet climate entity."""
+        self._ramp = ramp
         self._attr_unique_id = device.address
         self._max_temp_actual = 0.0
         self._min_temp_actual = 0.0
@@ -140,13 +146,22 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
 
         super().__init__(coordinator, device, name)
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to ramp updates so the displayed fan tracks the ramp."""
+        self.async_on_remove(
+            self._ramp.add_listener(self._handle_coordinator_update)
+        )
+        await super().async_added_to_hass()
+
     @callback
     def _async_update_attrs(self) -> None:
         """Handle updating _attr values."""
         device = self._device
         state = device.state
         self._attr_current_temperature = state.current_temperature
-        self._attr_fan_mode = f"{state.fan_speed}%"
+        # While ramping, show the requested target fan speed, not the live
+        # (ramping) device fan speed.
+        self._attr_fan_mode = f"{self._ramp.display_fan_speed(state.fan_speed)}%"
 
         # In AUTO, hvac_mode is a user-set intent that must survive device
         # operating_mode changes - including the transient/commanded STANDBY frames
@@ -216,13 +231,16 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set new target fan mode."""
-        await self._device.set_fan_speed(int(fan_mode.replace("%", "")))
+        await self._ramp.request_fan_speed(int(fan_mode.replace("%", "")))
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""
         if self._device.is_v2 and hvac_mode == HVACMode.DRY:
             _LOGGER.warning("Dry Mode is not supported on BedJet V2")
             return
+
+        # An explicit mode change aborts any fan ramp in progress.
+        self._ramp.cancel()
 
         if hvac_mode == HVACMode.AUTO:
             cur_temp = self.current_temperature
@@ -295,7 +313,19 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
 
         temp = kwargs.get(ATTR_TEMPERATURE)
 
+        # A target at or below the current temperature is not a warm-up, so any
+        # fan ramp in progress is aborted (and none is started below).
+        if temp is not None and temp <= self._device.state.current_temperature:
+            self._ramp.cancel()
+
         if self._attr_hvac_mode == HVACMode.AUTO:
+            # Detect warming on from standby before the operating mode changes.
+            warm_on = (
+                self._device.state.operating_mode == OperatingMode.STANDBY
+                and temp is not None
+                and temp > self._device.state.current_temperature
+            )
+
             # Check if we need to change the bedjet mode to allow this temperature
             target_mode = temperature_to_mode(temp)
             if target_mode != self._device.state.operating_mode:
@@ -312,7 +342,15 @@ class BedJetClimateEntity(BedJetEntity, ClimateEntity):
                 # it after the switch to avoid silently clobbering it.
                 prev_fan_speed = self._device.state.fan_speed
                 await self._device.set_operating_mode(target_mode)
-                if prev_fan_speed > 0 and self._device.state.fan_speed != prev_fan_speed:
+                if warm_on:
+                    # Warming on from standby: drop to a low-airflow floor so a
+                    # subsequent fan request ramps up gradually as the bed warms.
+                    _LOGGER.debug("Warm-on from standby: setting fan ramp floor")
+                    await self._ramp.set_floor()
+                elif (
+                    prev_fan_speed > 0
+                    and self._device.state.fan_speed != prev_fan_speed
+                ):
                     _LOGGER.debug(
                         "Restoring fan speed to %d%% after auto mode change (device reset it to %d%%)",
                         prev_fan_speed,

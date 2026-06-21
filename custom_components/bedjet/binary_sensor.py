@@ -18,6 +18,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import BedJetConfigEntry
 from .entity import BedJetEntity
+from .fan_ramp import FanRampController
 from .pybedjet import BedJet
 
 
@@ -61,8 +62,17 @@ async def async_setup_entry(
     """Set up the binary sensor platform for BedJet."""
     data = entry.runtime_data
     async_add_entities(
-        BedJetBinarySensorEntity(data.coordinator, data.device, entry.title, descriptor)
-        for descriptor in SENSORS
+        [
+            *(
+                BedJetBinarySensorEntity(
+                    data.coordinator, data.device, entry.title, descriptor
+                )
+                for descriptor in SENSORS
+            ),
+            BedJetFanRampingBinarySensor(
+                data.coordinator, data.device, entry.title, data.ramp
+            ),
+        ]
     )
 
 
@@ -87,3 +97,35 @@ class BedJetBinarySensorEntity(BedJetEntity, BinarySensorEntity):
     def _async_update_attrs(self) -> None:
         """Handle updating _attr values."""
         self._attr_is_on = self.entity_description.value_fn(self._device)
+
+
+class BedJetFanRampingBinarySensor(BedJetEntity, BinarySensorEntity):
+    """Diagnostic sensor reporting whether a fan-speed ramp is in progress."""
+
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "fan_ramping"
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[None],
+        device: BedJet,
+        name: str,
+        ramp: FanRampController,
+    ) -> None:
+        """Initialize the fan-ramping binary sensor."""
+        self._ramp = ramp
+        self._attr_unique_id = f"{device.address}_fan_ramping"
+        super().__init__(coordinator, device, name)
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to ramp state updates."""
+        self.async_on_remove(
+            self._ramp.add_listener(self._handle_coordinator_update)
+        )
+        await super().async_added_to_hass()
+
+    @callback
+    def _async_update_attrs(self) -> None:
+        """Handle updating _attr values."""
+        self._attr_is_on = self._ramp.is_ramping
