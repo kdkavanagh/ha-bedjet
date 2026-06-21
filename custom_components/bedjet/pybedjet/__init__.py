@@ -39,7 +39,7 @@ BEDJET2_COMMAND_UUID = "49535343-8841-43f4-a8d4-ecbe34729bb3"
 BEDJET2_NOTIFICATION_LENGTH = 14
 BEDJET2_TEMPERATURE_MIN_MAX = (19.0, 43.0)
 
-# BedJet 3 UUIDs (ISSC)
+# BedJet 3 UUIDs
 BEDJET3_SERVICE_UUID = "00001000-bed0-0080-aa55-4265644a6574"
 BEDJET3_STATUS_UUID = "00002000-bed0-0080-aa55-4265644a6574"
 BEDJET3_NAME_UUID = "00002001-bed0-0080-aa55-4265644a6574"
@@ -573,17 +573,27 @@ class BedJet:
                     bytearray([0x58, 0x01, 0x0B, 0x9B]),
                     response=False,
                 )
+                await asyncio.sleep(3.0)
             else:
                 self._is_v2 = False
                 status_uuid = BEDJET3_STATUS_UUID
 
             _LOGGER.debug("%s: Subscribe to notifications", self.name_and_address)
 
-            await client.start_notify(
-                status_uuid,
-                self._notification_handler,
-                cb={"notification_discriminator": self._notification_check_handler},
-            )
+            for attempt in range(3):
+                try:
+                    await client.start_notify(
+                        status_uuid,
+                        self._notification_handler,
+                        cb={
+                            "notification_discriminator": self._notification_check_handler
+                        },
+                    )
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(1.0)
 
             if not self._is_v2:
                 if self._device_status_data is None:
